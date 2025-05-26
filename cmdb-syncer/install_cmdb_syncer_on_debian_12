@@ -1,0 +1,632 @@
+---
+- name: Install CMDB Syncer on Debian 12 with Apache and uWSGI
+  hosts: localhost
+  become: true
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    cmdbsyncer_install_dir: "/var/www/cmdbsyncer"
+    cmdbsyncer_repo_url: "https://github.com/kuhn-ruess/cmdbsyncer.git"
+    cmdbsyncer_venv_dir: "{{ cmdbsyncer_install_dir }}/ENV"
+    server_ip: "YOUR-IP"
+    mongodb_version: "8.0"
+    apache_vhost_file: "/etc/apache2/sites-available/cmdbsyncer.conf"
+    http_proxy: "YOUR-PROXY:8080"
+    https_proxy: "YOUR-PROXY:8080"
+    ansible_tmp_dir: "/var/www/cmdbsyncer/.ansible_tmp"
+    proxy_cert_dir: "/root"
+    no_proxy: "localhost,127.0.0.1"
+    uwsgi_socket: "/run/uwsgi/cmdbsyncer.sock"
+    ANSIBLE_REMOTE_TMP: "{{ ansible_tmp_dir }}"
+  environment:
+    http_proxy: "{{ http_proxy | default('') }}"
+    https_proxy: "{{ https_proxy | default('') }}"
+    no_proxy: "{{ no_proxy }}"
+    ANSIBLE_REMOTE_TMP: "{{ ansible_tmp_dir }}"
+  pre_tasks:
+    - name: Test MongoDB connection
+      ansible.builtin.command: "python3 -c 'import pymongo; client = pymongo.MongoClient(\"mongodb://localhost:27017\"); client.admin.command(\"ping\")'"
+      register: mongodb_connection_test
+      failed_when: mongodb_connection_test.rc != 0
+      tags: [mongodb, test]
+  tasks:
+    - name: Update and upgrade all packages
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+        cache_valid_time: 3600
+      environment:
+        http_proxy: "{{ http_proxy }}"
+        https_proxy: "{{ https_proxy }}"
+      tags: [system]
+
+    - name: Install required dependencies
+      ansible.builtin.apt:
+        name:
+          - git
+          - python3
+          - python3-pip
+          - python3-venv
+          - apache2
+          - libapache2-mod-proxy-uwsgi
+          - uwsgi
+          - uwsgi-plugin-python3
+          - build-essential
+          - python3-dev
+          - curl
+          - gnupg
+          - ufw
+          - net-tools
+          - sudo
+          - ca-certificates
+          - ntp
+        state: present
+      environment:
+        http_proxy: "{{ http_proxy }}"
+        https_proxy: "{{ https_proxy }}"
+      tags: [dependencies]
+
+    - name: Ensure NTP service is running and enabled
+      ansible.builtin.systemd:
+        name: ntp
+        state: started
+        enabled: true
+      tags: [system]
+
+    - name: Verify network interface has the correct IP
+      ansible.builtin.command: ip addr show
+      register: ip_addr
+      changed_when: false
+      failed_when: "'inet {{ server_ip }}/' not in ip_addr.stdout"
+      tags: [network]
+
+    - name: Test network connectivity to MongoDB key server
+      ansible.builtin.command: "curl -x {{ http_proxy }} -fsSL https://www.mongodb.org/static/pgp/server-{{ mongodb_version }}.asc"
+      register: curl_test
+      changed_when: false
+      ignore_errors: true
+      tags: [mongodb]
+
+    - name: Debug network connectivity test
+      ansible.builtin.debug:
+        var: curl_test.stdout_lines
+      tags: [mongodb]
+
+    - name: Download MongoDB GPG key
+      ansible.builtin.get_url:
+        url: "https://www.mongodb.org/static/pgp/server-{{ mongodb_version }}.asc"
+        dest: "/tmp/mongodb-server-{{ mongodb_version }}.asc"
+        mode: "0644"
+        timeout: 30
+      environment:
+        http_proxy: "{{ http_proxy }}"
+        https_proxy: "{{ https_proxy }}"
+      tags: [mongodb]
+
+    - name: Import MongoDB GPG key
+      ansible.builtin.shell: |
+        gpg --no-default-keyring --keyring /usr/share/keyrings/mongodb-server-{{ mongodb_version }}.gpg --import /tmp/mongodb-server-{{ mongodb_version }}.asc
+      args:
+        creates: /usr/share/keyrings/mongodb-server-{{ mongodb_version }}.gpg
+      tags: [mongodb]
+
+    - name: Add MongoDB repository
+      ansible.builtin.apt_repository:
+        repo: "deb [ arch=amd64 signed-by=/usr/share/keyrings/mongodb-server-{{ mongodb_version }}.gpg ] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/{{ mongodb_version }} main"
+        state: present
+        filename: mongodb-org-{{ mongodb_version }}
+      environment:
+        http_proxy: "{{ http_proxy }}"
+        https_proxy: "{{ https_proxy }}"
+      tags: [mongodb]
+
+    - name: Install MongoDB
+      ansible.builtin.apt:
+        name:
+          - mongodb-org
+        state: present
+        update_cache: true
+      environment:
+        http_proxy: "{{ http_proxy }}"
+        https_proxy: "{{ https_proxy }}"
+      tags: [mongodb]
+
+    - name: Ensure MongoDB service is running and enabled
+      ansible.builtin.systemd:
+        name: mongod
+        state: started
+        enabled: true
+      tags: [mongodb]
+
+    - name: Fix permissions for default Ansible tmp directory
+      ansible.builtin.file:
+        path: "{{ ansible_tmp_dir }}"
+        state: directory
+        mode: "0755"
+        owner: www-data
+        group: www-data
+      tags: [cmdbsyncer]
+
+    - name: Check if sudo is available
+      ansible.builtin.command: which sudo
+      register: sudo_check
+      changed_when: false
+      failed_when: sudo_check.rc != 0
+      tags: [cmdbsyncer]
+
+    - name: Debug sudo availability
+      ansible.builtin.debug:
+        msg: "sudo found at: {{ sudo_check.stdout }}"
+      tags: [cmdbsyncer]
+
+    - name: Gather package facts
+      ansible.builtin.package_facts:
+        manager: apt
+      tags: [cmdbsyncer]
+
+    - name: Check if ca-certificates is installed
+      ansible.builtin.debug:
+        msg: "ca-certificates is {{ 'installed' if 'ca-certificates' in ansible_facts.packages else 'not installed' }}"
+      tags: [cmdbsyncer]
+
+    - name: Check system time
+      ansible.builtin.command: date
+      register: system_time
+      changed_when: false
+      tags: [cmdbsyncer]
+
+    - name: Debug system time
+      ansible.builtin.debug:
+        var: system_time.stdout
+      tags: [cmdbsyncer]
+
+    - name: Find proxy CA certificates in /root
+      ansible.builtin.find:
+        paths: "{{ proxy_cert_dir }}"
+        patterns: "*.pem"
+        recurse: false
+      register: proxy_certs
+      tags: [cmdbsyncer]
+
+    - name: Debug found proxy CA certificates
+      ansible.builtin.debug:
+        var: proxy_certs.files
+      tags: [cmdbsyncer]
+
+    - name: Copy proxy CA certificates to CA store
+      ansible.builtin.copy:
+        src: "{{ item.path }}"
+        dest: "/usr/local/share/ca-certificates/{{ item.path | basename | regex_replace('.pem$', '.crt') }}"
+        mode: "0644"
+      loop: "{{ proxy_certs.files }}"
+      when: proxy_certs.files | length > 0
+      tags: [system]
+
+    - name: Update CA certificates
+      ansible.builtin.command: update-ca-certificates
+      when: proxy_certs.files | length > 0
+      tags: [system]
+
+    - name: Check installed CA certificates
+      ansible.builtin.shell: ls -l /usr/local/share/ca-certificates/ || true
+      register: ca_certificates_files
+      changed_when: false
+      tags: [cmdbsyncer]
+
+    - name: Debug installed CA certificates
+      ansible.builtin.debug:
+        var: ca_certificates_files.stdout_lines
+      tags: [cmdbsyncer]
+
+    - name: Test proxy connectivity with curl
+      ansible.builtin.command: curl -x {{ http_proxy }} -fsSL https://github.com/kuhn-ruess/cmdbsyncer.git
+      register: curl_proxy_test
+      changed_when: false
+      ignore_errors: true
+      tags: [cmdbsyncer]
+
+    - name: Debug curl proxy connectivity test
+      ansible.builtin.debug:
+        var: curl_proxy_test
+      tags: [cmdbsyncer]
+
+    - name: Test Git connectivity to CMDB Syncer repository
+      ansible.builtin.shell: |
+        git ls-remote {{ cmdbsyncer_repo_url }} HEAD
+      register: git_test
+      changed_when: false
+      ignore_errors: true
+      environment:
+        http_proxy: "{{ http_proxy }}"
+        https_proxy: "{{ https_proxy }}"
+      tags: [cmdbsyncer]
+
+    - name: Debug Git connectivity test
+      ansible.builtin.debug:
+        var: git_test
+      tags: [cmdbsyncer]
+
+    - name: Debug available branches in CMDB Syncer repository
+      ansible.builtin.shell: |
+        git ls-remote --heads {{ cmdbsyncer_repo_url }}
+      register: git_branches
+      changed_when: false
+      ignore_errors: true
+      environment:
+        http_proxy: "{{ http_proxy }}"
+        https_proxy: "{{ https_proxy }}"
+      tags: [cmdbsyncer]
+
+    - name: Debug available branches
+      ansible.builtin.debug:
+        var: git_branches.stdout_lines
+      tags: [cmdbsyncer]
+
+    - name: Debug contents of existing CMDB Syncer directory before removal
+      ansible.builtin.shell: ls -la {{ cmdbsyncer_install_dir }} || true
+      register: cmdbsyncer_dir_contents_before
+      changed_when: false
+      when: cmdbsyncer_install_dir is exists
+      tags: [cmdbsyncer]
+
+    - name: Debug CMDB Syncer directory contents before removal
+      ansible.builtin.debug:
+        var: cmdbsyncer_dir_contents_before.stdout_lines
+      when: cmdbsyncer_dir_contents_before.stdout is defined
+      tags: [cmdbsyncer]
+
+    - name: Remove existing CMDB Syncer directory if it exists
+      ansible.builtin.file:
+        path: "{{ cmdbsyncer_install_dir }}"
+        state: absent
+      tags: [cmdbsyncer]
+
+    - name: Recreate CMDB Syncer installation directory
+      ansible.builtin.file:
+        path: "{{ cmdbsyncer_install_dir }}"
+        state: directory
+        mode: "0755"
+        owner: www-data
+        group: www-data
+      tags: [cmdbsyncer]
+
+    - name: Debug contents of CMDB Syncer directory after recreation
+      ansible.builtin.shell: ls -la {{ cmdbsyncer_install_dir }} || true
+      register: cmdbsyncer_dir_contents_after
+      changed_when: false
+      tags: [cmdbsyncer]
+
+    - name: Debug CMDB Syncer directory contents after recreation
+      ansible.builtin.debug:
+        var: cmdbsyncer_dir_contents_after.stdout_lines
+      tags: [cmdbsyncer]
+
+    - name: Clone CMDB Syncer repository
+      ansible.builtin.git:
+        repo: "{{ cmdbsyncer_repo_url }}"
+        dest: "{{ cmdbsyncer_install_dir }}"
+        version: main
+        update: true
+      become_user: www-data
+      environment:
+        http_proxy: "{{ http_proxy }}"
+        https_proxy: "{{ https_proxy }}"
+      tags: [cmdbsyncer]
+
+    - name: Create Ansible temporary directory
+      ansible.builtin.file:
+        path: "{{ ansible_tmp_dir }}"
+        state: directory
+        mode: "0755"
+        owner: www-data
+        group: www-data
+      tags: [cmdbsyncer]
+
+    - name: Remove existing virtual environment if it exists
+      ansible.builtin.file:
+        path: "{{ cmdbsyncer_venv_dir }}"
+        state: absent
+      tags: [cmdbsyncer]
+
+    - name: Create Python virtual environment
+      ansible.builtin.shell: |
+        python3 -m venv {{ cmdbsyncer_venv_dir }}
+      args:
+        creates: "{{ cmdbsyncer_venv_dir }}/bin/activate"
+      become_user: www-data
+      tags: [cmdbsyncer]
+
+    - name: Install Python requirements
+      ansible.builtin.pip:
+        requirements: "{{ cmdbsyncer_install_dir }}/requirements.txt"
+        virtualenv: "{{ cmdbsyncer_venv_dir }}"
+      become_user: www-data
+      environment:
+        http_proxy: "{{ http_proxy }}"
+        https_proxy: "{{ https_proxy }}"
+      tags: [cmdbsyncer]
+
+    - name: Ensure correct permissions for CMDB Syncer directory
+      ansible.builtin.file:
+        path: "{{ cmdbsyncer_install_dir }}"
+        state: directory
+        mode: "0755"
+        owner: www-data
+        group: www-data
+        recurse: true
+      tags: [cmdbsyncer]
+
+    - name: Create uWSGI configuration
+      ansible.builtin.copy:
+        content: |
+          [uwsgi]
+          enable-threads = true
+          chmod-socket = 777
+          socket = {{ uwsgi_socket }}
+          plugin = python311
+          virtualenv = {{ cmdbsyncer_venv_dir }}
+          chdir = {{ cmdbsyncer_install_dir }}
+          wsgi-file = {{ cmdbsyncer_install_dir }}/app.py
+          callable = app
+          processes = 8
+          threads = 4
+          max-fd = 120000
+        dest: "/etc/uwsgi/apps-available/cmdbsyncer.ini"
+        mode: "0644"
+        owner: www-data
+        group: www-data
+      tags: [uwsgi]
+
+    - name: Enable uWSGI configuration
+      ansible.builtin.file:
+        src: "/etc/uwsgi/apps-available/cmdbsyncer.ini"
+        dest: "/etc/uwsgi/apps-enabled/cmdbsyncer.ini"
+        state: link
+      notify: restart_uwsgi
+      tags: [uwsgi]
+
+    - name: Ensure uWSGI socket directory exists
+      ansible.builtin.file:
+        path: "/run/uwsgi"
+        state: directory
+        mode: "0755"
+        owner: www-data
+        group: www-data
+      tags: [uwsgi]
+
+    - name: Ensure uWSGI service is running and enabled
+      ansible.builtin.systemd:
+        name: uwsgi
+        state: started
+        enabled: true
+      tags: [uwsgi]
+
+    - name: Create CMDB Syncer local_config.py
+      ansible.builtin.copy:
+        content: |
+          BASE_PREFIX = '/cmdbsyncer/'
+          MONGODB_HOST = 'localhost'
+          MONGODB_PORT = 27017
+          MONGODB_DATABASE = 'cmdbsyncer'
+        dest: "{{ cmdbsyncer_install_dir }}/local_config.py"
+        mode: "0644"
+        owner: www-data
+        group: www-data
+      tags: [cmdbsyncer]
+
+    - name: Check CMDB Syncer local_config
+      ansible.builtin.shell: |
+        cat {{ cmdbsyncer_install_dir }}/local_config.py || true
+      register: cmdbsyncer_local_config
+      changed_when: false
+      tags: [cmdbsyncer]
+
+    - name: Debug CMDB Syncer local_config
+      ansible.builtin.debug:
+        var: cmdbsyncer_local_config.stdout_lines
+      tags: [cmdbsyncer]
+
+    - name: Debug CMDB Syncer routes
+      ansible.builtin.shell:
+        cmd: |
+          . {{ cmdbsyncer_venv_dir }}/bin/activate && python3 -c "from cmdbsyncer import app; print([rule.rule for rule in app.url_map.iter_rules()])"
+        executable: /bin/bash
+      register: cmdbsyncer_routes
+      become_user: www-data
+      ignore_errors: true
+      tags: [cmdbsyncer]
+
+    - name: Debug CMDB Syncer routes output
+      ansible.builtin.debug:
+        var: cmdbsyncer_routes.stdout_lines
+      tags: [cmdbsyncer]
+
+    - name: Copy Apache virtual host configuration
+      ansible.builtin.template:
+        src: cmdbsyncer.conf.j2
+        dest: "{{ apache_vhost_file }}"
+        mode: "0644"
+      notify: reload_apache
+      tags: [apache]
+
+    - name: Enable Apache virtual host
+      ansible.builtin.file:
+        src: "{{ apache_vhost_file }}"
+        dest: "/etc/apache2/sites-enabled/cmdbsyncer.conf"
+        state: link
+      notify: reload_apache
+      tags: [apache]
+
+    - name: Enable Apache modules
+      ansible.builtin.command: a2enmod proxy proxy_uwsgi
+      args:
+        creates: "/etc/apache2/mods-enabled/proxy.load"
+      notify: reload_apache
+      tags: [apache]
+
+    - name: Ensure Apache service is running and enabled
+      ansible.builtin.systemd:
+        name: apache2
+        state: started
+        enabled: true
+      tags: [apache]
+
+    - name: Check Apache configuration
+      ansible.builtin.command: apache2ctl configtest
+      register: apache_config_test
+      changed_when: false
+      tags: [apache]
+
+    - name: Debug Apache configuration test
+      ansible.builtin.debug:
+        var: apache_config_test.stdout_lines
+      tags: [apache]
+
+    - name: Debug Apache virtual host configuration
+      ansible.builtin.shell: cat {{ apache_vhost_file }} || true
+      register: apache_vhost_config
+      changed_when: false
+      tags: [apache]
+
+    - name: Debug Apache virtual host content
+      ansible.builtin.debug:
+        var: apache_vhost_config.stdout_lines
+      tags: [apache]
+
+    - name: Configure firewall to allow HTTP traffic
+      ansible.builtin.ufw:
+        rule: allow
+        port: 80
+        proto: tcp
+      tags: [firewall]
+
+    - name: Configure firewall to allow HTTPS traffic
+      ansible.builtin.ufw:
+        rule: allow
+        port: 443
+        proto: tcp
+      tags: [firewall]
+
+    - name: Configure firewall to allow SSH traffic
+      ansible.builtin.ufw:
+        rule: allow
+        port: 22
+        proto: tcp
+      tags: [firewall]
+
+    - name: Ensure UFW is enabled and default deny
+      ansible.builtin.ufw:
+        state: enabled
+        policy: deny
+      tags: [firewall]
+
+    - name: Allow outgoing HTTPS traffic for proxy
+      ansible.builtin.ufw:
+        rule: allow
+        direction: out
+        port: 443
+        proto: tcp
+      tags: [firewall]
+
+    - name: Check Apache error logs
+      ansible.builtin.shell: tail -n 100 /var/log/apache2/cmdbsyncer_error.log || true
+      register: apache_error_logs
+      changed_when: false
+      tags: [apache]
+
+    - name: Debug Apache error logs
+      ansible.builtin.debug:
+        var: apache_error_logs.stdout_lines
+      tags: [apache]
+
+    - name: Check Apache access logs
+      ansible.builtin.shell: tail -n 100 /var/log/apache2/cmdbsyncer_access.log || true
+      register: apache_access_logs
+      changed_when: false
+      tags: [apache]
+
+    - name: Debug Apache access logs
+      ansible.builtin.debug:
+        var: apache_access_logs.stdout_lines
+      tags: [apache]
+
+    - name: Check MongoDB logs
+      ansible.builtin.shell: tail -n 100 /var/log/mongodb/mongod.log || true
+      register: mongodb_logs
+      changed_when: false
+      tags: [mongodb]
+
+    - name: Debug MongoDB logs
+      ansible.builtin.debug:
+        var: mongodb_logs.stdout_lines
+      tags: [mongodb]
+
+    - name: Check uWSGI logs
+      ansible.builtin.shell: tail -n 100 /var/log/uwsgi/app/cmdbsyncer.log || true
+      register: uwsgi_logs
+      changed_when: false
+      tags: [uwsgi]
+
+    - name: Debug uWSGI logs
+      ansible.builtin.debug:
+        var: uwsgi_logs.stdout_lines
+      tags: [uwsgi]
+
+    - name: Check SELinux status
+      ansible.builtin.command: sestatus
+      register: selinux_status
+      changed_when: false
+      ignore_errors: true
+      tags: [cmdbsyncer]
+
+    - name: Debug SELinux status
+      ansible.builtin.debug:
+        var: selinux_status.stdout_lines
+      when: selinux_status.rc == 0
+      tags: [cmdbsyncer]
+
+    - name: Check AppArmor status
+      ansible.builtin.command: aa-status
+      register: apparmor_status
+      changed_when: false
+      ignore_errors: true
+      tags: [cmdbsyncer]
+
+    - name: Debug AppArmor status
+      ansible.builtin.debug:
+        var: apparmor_status.stdout_lines
+      when: apparmor_status.rc == 0
+      tags: [cmdbsyncer]
+
+    - name: Test CMDB Syncer HTTP endpoint with expected path
+      ansible.builtin.uri:
+        url: "http://localhost/cmdbsyncer/"
+        method: GET
+        status_code: 200
+      register: cmdbsyncer_http_test
+      ignore_errors: true
+      tags: [cmdbsyncer]
+
+    - name: Debug CMDB Syncer HTTP test
+      ansible.builtin.debug:
+        var: cmdbsyncer_http_test
+      tags: [cmdbsyncer]
+
+    - name: Display CMDB Syncer access information
+      ansible.builtin.debug:
+        msg:
+          - "CMDB Syncer installation completed."
+          - "Access CMDB Syncer at: http://{{ server_ip }}/cmdbsyncer/"
+          - "Default login: Check documentation for initial credentials."
+      when: cmdbsyncer_http_test.status == 200
+      tags: [cmdbsyncer]
+
+  handlers:
+    - name: reload_apache
+      ansible.builtin.systemd:
+        name: apache2
+        state: reloaded
+
+    - name: restart_uwsgi
+      ansible.builtin.systemd:
+        name: uwsgi
+        state: restarted
