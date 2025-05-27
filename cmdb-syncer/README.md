@@ -77,58 +77,72 @@ cd ansible-things/cmdb-syncer
 
 Das Playbook sieht wie folgt aus (Auszug zur Übersicht):
 ```yaml
-- name: Install cmdb-syncer on Debian 12
-  hosts: cmdb-syncer
+---
+- name: Install CMDB Syncer on Debian 12 with Apache and uWSGI
+  hosts: localhost
   become: true
   vars:
-    cmdb_dir: /opt/cmdb
-    cmdb_user: cmdb
-    cmdb_group: cmdb
-    cmdb_repo: https://github.com/fmnisme/cmdb-syncer.git
+    ansible_python_interpreter: /usr/bin/python3
+    cmdbsyncer_install_dir: "/var/www/cmdbsyncer"
+    cmdbsyncer_repo_url: "https://github.com/kuhn-ruess/cmdbsyncer.git"
+    cmdbsyncer_venv_dir: "{{ cmdbsyncer_install_dir }}/ENV"
+    server_ip: "YOUR-IP"
     mongodb_version: "8.0"
+    apache_vhost_file: "/etc/apache2/sites-available/cmdbsyncer.conf"
+    http_proxy: "YOUR-PROXY:8080"
+    https_proxy: "YOUR-PROXY:8080"
+    ansible_tmp_dir: "/var/www/cmdbsyncer/.ansible_tmp"
+    proxy_cert_dir: "/root"
+    no_proxy: "localhost,127.0.0.1"
+    uwsgi_socket: "/run/uwsgi/cmdbsyncer.sock"
+    ANSIBLE_REMOTE_TMP: "{{ ansible_tmp_dir }}"
+  environment:
+    http_proxy: "{{ http_proxy | default('') }}"
+    https_proxy: "{{ https_proxy | default('') }}"
+    no_proxy: "{{ no_proxy }}"
+    ANSIBLE_REMOTE_TMP: "{{ ansible_tmp_dir }}"
+  pre_tasks:
+    - name: Test MongoDB connection
+      ansible.builtin.command: "python3 -c 'import pymongo; client = pymongo.MongoClient(\"mongodb://localhost:27017\"); client.admin.command(\"ping\")'"
+      register: mongodb_connection_test
+      failed_when: mongodb_connection_test.rc != 0
+      tags: [mongodb, test]
   tasks:
-    - name: Install required packages
+    - name: Update and upgrade all packages
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+        cache_valid_time: 3600
+      environment:
+        http_proxy: "{{ http_proxy }}"
+        https_proxy: "{{ https_proxy }}"
+      tags: [system]
+
+    - name: Install required dependencies
       ansible.builtin.apt:
         name:
+          - git
           - python3
           - python3-pip
           - python3-venv
-          - git
-          - gnupg
+          - apache2
+          - libapache2-mod-proxy-uwsgi
+          - uwsgi
+          - uwsgi-plugin-python3
+          - build-essential
+          - python3-dev
           - curl
+          - gnupg
+          - ufw
+          - net-tools
+          - sudo
+          - ca-certificates
+          - ntp
         state: present
-        update_cache: true
-    - name: Create cmdb user
-      ansible.builtin.user:
-        name: "{{ cmdb_user }}"
-        group: "{{ cmdb_group }}"
-        home: "{{ cmdb_dir }}"
-        createhome: true
-        shell: /bin/bash
-    - name: Install MongoDB
-      ansible.builtin.import_tasks: install_mongodb.yml
-    - name: Clone cmdb-syncer repository
-      ansible.builtin.git:
-        repo: "{{ cmdb_repo }}"
-        dest: "{{ cmdb_dir }}/cmdb-syncer"
-        version: main
-    - name: Install Python dependencies
-      ansible.builtin.pip:
-        requirements: "{{ cmdb_dir }}/cmdb-syncer/requirements.txt"
-        virtualenv: "{{ cmdb_dir }}/venv"
-        virtualenv_python: python3
-    - name: Copy systemd service file
-      ansible.builtin.copy:
-        src: cmdb-syncer.service
-        dest: /etc/systemd/system/cmdb-syncer.service
-        owner: root
-        group: root
-        mode: '0644'
-    - name: Enable and start cmdb-syncer service
-      ansible.builtin.systemd:
-        name: cmdb-syncer
-        enabled: true
-        state: started
+      environment:
+        http_proxy: "{{ http_proxy }}"
+        https_proxy: "{{ https_proxy }}"
+      tags: [dependencies]
 ```
 
 ### 2. Inventory anpassen
