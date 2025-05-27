@@ -184,7 +184,7 @@ Das Playbook führt folgende Schritte aus:
 Nach der Ausführung des Playbooks:
 1. Prüfe, ob der CMDB-Syncer-Dienst läuft:
    ```bash
-   systemctl status cmdb-syncer
+   systemctl status cmdbsyncer
    ```
 2. Überprüfe die MongoDB-Installation:
    ```bash
@@ -192,7 +192,7 @@ Nach der Ausführung des Playbooks:
    ```
 3. Stelle sicher, dass das Verzeichnis `/opt/cmdb/cmdb-syncer` die geklonte Repository-Struktur enthält:
    ```bash
-   ls /opt/cmdb/cmdb-syncer
+   ls /var/www/cmdbsyncer
    ```
 
 ### 6. Fehlerbehandlung
