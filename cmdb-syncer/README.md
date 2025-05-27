@@ -184,8 +184,8 @@ Nach der Ausführung des Playbooks:
 ### 6. Fehlerbehandlung
 - **AVX-Fehler bei MongoDB**: Wenn MongoDB nicht startet, überprüfe die AVX-Unterstützung (siehe Hinweis oben). Stelle sicher, dass die VM den korrekten CPU-Typ verwendet.
 - **Paketinstallation fehlschlägt**: Überprüfe die `apt`-Quellen und die Internetverbindung des Zielsystems.
-- **Git-Fehler**: Stelle sicher, dass die URL `https://github.com/fmnisme/cmdb-syncer.git` erreichbar ist und keine Authentifizierung erfordert.
-- **Systemd-Dienst startet nicht**: Überprüfe die Protokolle (`journalctl -u cmdb-syncer`) und die Berechtigungen der Datei `/etc/systemd/system/cmdb-syncer.service`.
+- **Git-Fehler**: Stelle sicher, dass die URL `https://github.com/kuhn-ruess/cmdbsyncer` erreichbar ist und keine Authentifizierung erfordert.
+- **Systemd-Dienst startet nicht**: Überprüfe die Protokolle (`journalctl -u cmdbsyncer`) und die Berechtigungen der Datei `/etc/systemd/system/cmdbsyncer.service`.
 - **Python-Abhängigkeiten**: Stelle sicher, dass `requirements.txt` im geklonten Repository vorhanden ist und die virtuelle Umgebung korrekt erstellt wurde.
 
 ## Hinweise
@@ -193,7 +193,7 @@ Nach der Ausführung des Playbooks:
 - **MongoDB-Version**: Das Playbook verwendet MongoDB 6.0. Für andere Versionen passe die Variable `mongodb_version` an und überprüfe die Kompatibilität.
 - **Systemd-Dienstdatei**: Stelle sicher, dass die Datei `cmdb-syncer.service` im gleichen Verzeichnis wie das Playbook liegt, da sie vom Playbook kopiert wird.
 - **Sicherheit**: Erwäge, sensible Daten (z. B. SSH-Schlüssel oder MongoDB-Zugangsdaten) in einer Ansible Vault-Datei zu speichern.
-- **Dokumentation**: Weitere Details zum CMDB-Syncer findest du im Repository [fmnisme/cmdb-syncer](https://github.com/fmnisme/cmdb-syncer). Für Ansible-spezifische Fragen siehe die [Ansible-Dokumentation](https://docs.ansible.com).
+- **Dokumentation**: Weitere Details zum CMDB-Syncer findest du im Repository [kuhn-ruess/cmdbsyncer][(https://github.com/kuhn-ruess/cmdbsyncer)]. Für Ansible-spezifische Fragen siehe die [Ansible-Dokumentation](https://docs.ansible.com).
 - **Anpassungen**: Passe die Variablen `cmdb_dir`, `cmdb_user`, `cmdb_group` oder `cmdb_repo` an, wenn du eine andere Verzeichnisstruktur, einen anderen Benutzer oder ein anderes Repository verwenden möchtest.
 
 ## Fazit
