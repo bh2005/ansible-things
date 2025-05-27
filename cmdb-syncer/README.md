@@ -193,7 +193,7 @@ Nach der Ausführung des Playbooks:
 - **MongoDB-Version**: Das Playbook verwendet MongoDB 6.0. Für andere Versionen passe die Variable `mongodb_version` an und überprüfe die Kompatibilität.
 - **Systemd-Dienstdatei**: Stelle sicher, dass die Datei `cmdb-syncer.service` im gleichen Verzeichnis wie das Playbook liegt, da sie vom Playbook kopiert wird.
 - **Sicherheit**: Erwäge, sensible Daten (z. B. SSH-Schlüssel oder MongoDB-Zugangsdaten) in einer Ansible Vault-Datei zu speichern.
-- **Dokumentation**: Weitere Details zum CMDB-Syncer findest du im Repository [kuhn-ruess/cmdbsyncer][(https://github.com/kuhn-ruess/cmdbsyncer)]. Für Ansible-spezifische Fragen siehe die [Ansible-Dokumentation](https://docs.ansible.com).
+- **Dokumentation**: Weitere Details zum CMDB-Syncer findest du im Repository [kuhn-ruess/cmdbsyncer]([https://github.com/kuhn-ruess/cmdbsyncer]). Für Ansible-spezifische Fragen siehe die [Ansible-Dokumentation](https://docs.ansible.com).
 - **Anpassungen**: Passe die Variablen `cmdb_dir`, `cmdb_user`, `cmdb_group` oder `cmdb_repo` an, wenn du eine andere Verzeichnisstruktur, einen anderen Benutzer oder ein anderes Repository verwenden möchtest.
 
 ## Fazit
