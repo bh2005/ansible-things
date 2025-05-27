@@ -162,7 +162,7 @@ Das Playbook führt folgende Schritte aus:
 1. **Installation von Paketen**: Installiert `python3`, `python3-pip`, `python3-venv`, `git`, `gnupg` und `curl` über `apt`.
 2. **Benutzererstellung**: Erstellt einen Benutzer `cmdb` mit dem Home-Verzeichnis `/opt/cmdb`.
 3. **MongoDB-Installation**: Importiert die Aufgabe `install_mongodb.yml`, um MongoDB (Version 8.0) zu installieren.
-4. **Repository klonen**: Klont das CMDB-Syncer-Repository von [fmnisme/cmdb-syncer](https://github.com/fmnisme/cmdb-syncer) nach `/opt/cmdb/cmdb-syncer`.
+4. **Repository klonen**: Klont das CMDB-Syncer-Repository von [kuhn-ruess/cmdbsyncer]([https://github.com/kuhn-ruess/cmdbsyncer]) nach `/opt/cmdb/cmdb-syncer`.
 5. **Python-Abhängigkeiten**: Installiert die erforderlichen Python-Pakete aus `requirements.txt` in einer virtuellen Umgebung (`/opt/cmdb/venv`).
 6. **Systemd-Dienst**: Kopiert die `cmdb-syncer.service`-Datei nach `/etc/systemd/system` und aktiviert/startet den Dienst.
 
