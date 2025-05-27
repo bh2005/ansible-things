@@ -1,6 +1,6 @@
 ## Warum MongoDB im CMDB-Syncer verwendet wird
 
-Der CMDB-Syncer (basierend auf [kuhn-ruess/cmdbsyncer](https://github.com/kuhn-ruess/cmdbsyncer), ist ein regelbasiertes System zur Synchronisation von Hosts zwischen verschiedenen Systemen wie Checkmk, Netbox, i-doit und anderen. MongoDB wurde als lokale Datenbank für den CMDB-Syncer gewählt, aus folgenden Gründen:
+Der CMDB-Syncer [kuhn-ruess/cmdbsyncer](https://github.com/kuhn-ruess/cmdbsyncer, ist ein regelbasiertes System zur Synchronisation von Hosts zwischen verschiedenen Systemen wie Checkmk, Netbox, i-doit und anderen. MongoDB wurde als lokale Datenbank für den CMDB-Syncer gewählt, aus folgenden Gründen:
 
 ### 1. Flexibles Datenmodell
 - **NoSQL-Datenbank**: MongoDB ist eine dokumentenbasierte NoSQL-Datenbank, die flexible Schemata unterstützt. Dies ist ideal für den CMDB-Syncer, da Hosts und ihre Attribute (z. B. IP-Adressen, Labels, Inventardaten) in unterschiedlichen Formaten und Strukturen gespeichert werden müssen, die sich je nach Quelle (z. B. Checkmk, Netbox, CSV-Dateien) unterscheiden können.
