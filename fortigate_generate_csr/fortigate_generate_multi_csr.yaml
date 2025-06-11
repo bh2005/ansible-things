@@ -1,0 +1,110 @@
+---
+- name: Mehrere OpenSSL CSRs und private Schlüssel generieren
+  hosts: localhost # Dieses Playbook läuft auf dem Ansible Control Host
+  connection: local
+  gather_facts: no
+
+  vars:
+    # --- Konfigurieren Sie diese Variablen ---
+    # Basisverzeichnis, in dem die Host-Unterordner für die generierten Schlüssel und CSRs erstellt werden
+    base_output_directory: "/tmp/csrs_and_keys"
+
+    # Private Key Einstellungen (gelten für alle generierten Schlüssel, sofern nicht überschrieben)
+    default_private_key_size: 2048 # Oder 4096 für höhere Sicherheit
+    default_private_key_type: RSA # Oder EC für Elliptic Curve Keys
+
+    # Liste der CSR-Definitionen. Fügen Sie hier so viele Einträge hinzu, wie Sie benötigen.
+    # Jeder Eintrag repräsentiert einen CSR, der generiert werden soll.
+    csr_definitions:
+      - common_name: "webserver1.example.com"
+        country: "DE"
+        state: "Hessen"
+        locality: "Alheim"
+        organization: "Meine Web-Firma GmbH"
+        organizational_unit: "Webteam"
+        email_address: "webmaster@example.com"
+        subject_alt_names:
+          - "DNS:www.webserver1.example.com"
+          - "DNS:app.webserver1.example.com"
+        # private_key_size: 4096 # Kann hier überschrieben werden, wenn für diesen CSR anders benötigt
+        # private_key_passphrase: "secret_passphrase_for_webserver1" # Optional
+
+      - common_name: "database.internal.com"
+        country: "DE"
+        state: "Hessen"
+        locality: "Alheim"
+        organization: "Meine DB-Firma AG"
+        organizational_unit: "Datenbanken"
+        email_address: "dbadmin@internal.com"
+        subject_alt_names:
+          - "IP:10.0.0.10"
+        # private_key_type: EC # Beispiel für EC-Schlüssel
+
+      - common_name: "mailserver.mycompany.local"
+        country: "US"
+        state: "New York"
+        locality: "New York City"
+        organization: "My Corp Inc."
+        organizational_unit: "Email Services"
+        email_address: "postmaster@mycompany.local"
+        subject_alt_names:
+          - "DNS:autodiscover.mycompany.local"
+          - "DNS:mail.mycompany.local"
+    # --- Ende der Konfiguration ---
+
+  tasks:
+    - name: Verarbeite jede CSR-Definition
+      loop: "{{ csr_definitions }}"
+      loop_control:
+        loop_var: csr_item
+      block:
+        - name: Setze Hostnamen für den aktuellen CSR-Vorgang
+          set_fact:
+            current_csr_cn: "{{ csr_item.common_name }}"
+            current_csr_details: "{{ csr_item }}"
+            current_key_size: "{{ csr_item.private_key_size | default(default_private_key_size) }}"
+            current_key_type: "{{ csr_item.private_key_type | default(default_private_key_type) }}"
+            current_key_passphrase: "{{ csr_item.private_key_passphrase | default(omit) }}"
+
+        - name: Sicherstellen, dass das Host-spezifische Ausgabeverzeichnis existiert ({{ current_csr_cn }})
+          file:
+            path: "{{ base_output_directory }}/{{ current_csr_cn }}"
+            state: directory
+            mode: '0755'
+
+        - name: Privaten Schlüssel generieren ({{ current_key_type }}, {{ current_key_size }} bits) für {{ current_csr_cn }}
+          community.crypto.openssl_privatekey:
+            path: "{{ base_output_directory }}/{{ current_csr_cn }}/{{ current_csr_cn }}.key"
+            size: "{{ current_key_size }}"
+            type: "{{ current_key_type }}"
+            passphrase: "{{ current_key_passphrase }}"
+            force: no
+          register: private_key_result
+
+        - name: CSR generieren für {{ current_csr_cn }}
+          community.crypto.openssl_csr:
+            path: "{{ base_output_directory }}/{{ current_csr_cn }}/{{ current_csr_cn }}.csr"
+            privatekey_path: "{{ base_output_directory }}/{{ current_csr_cn }}/{{ current_csr_cn }}.key"
+            privatekey_passphrase: "{{ current_key_passphrase }}"
+            common_name: "{{ current_csr_details.common_name }}"
+            country_name: "{{ current_csr_details.country }}"
+            state_or_province_name: "{{ current_csr_details.state }}"
+            locality_name: "{{ current_csr_details.locality }}"
+            organization_name: "{{ current_csr_details.organization }}"
+            organizational_unit_name: "{{ current_csr_details.organizational_unit }}"
+            email_address: "{{ current_csr_details.email_address }}"
+            subject_alt_name: "{{ current_csr_details.subject_alt_names | default([]) }}"
+            force: no
+          register: csr_result
+
+        - name: Anzeigen des Pfads der generierten Dateien für {{ current_csr_cn }}
+          debug:
+            msg: |
+              Privater Schlüssel gespeichert unter: {{ base_output_directory }}/{{ current_csr_cn }}/{{ current_csr_cn }}.key
+              CSR gespeichert unter: {{ base_output_directory }}/{{ current_csr_cn }}/{{ current_csr_cn }}.csr
+          when: private_key_result.changed or csr_result.changed
+
+        - name: Hinweis, wenn Dateien bereits existieren für {{ current_csr_cn }}
+          debug:
+            msg: "Schlüssel und/oder CSR für {{ current_csr_cn }} existieren bereits und wurden nicht neu generiert."
+          when: not private_key_result.changed and not csr_result.changed

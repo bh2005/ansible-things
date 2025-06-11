@@ -1,0 +1,84 @@
+---
+- name: OpenSSL CSR und privaten Schlüssel generieren
+  hosts: localhost # Dies läuft auf dem Ansible Control Host
+  connection: local
+  gather_facts: no
+
+  vars:
+    # --- Konfigurieren Sie diese Variablen ---
+    # Basisverzeichnis, in dem die Host-Unterordner erstellt werden
+    base_output_directory: "/tmp/csrs_and_keys"
+
+    # Details für die CSR
+    # Diese können pro Host in der Inventory oder über `--extra-vars` übergeben werden
+    # FÜR DIESES SKRIPT WICHTIG:
+    # `csr_common_name` sollte dem Hostnamen entsprechen, für den der CSR erstellt wird.
+    # Wenn Sie mehrere Hosts im Playbook haben, die unterschiedliche CSRs benötigen,
+    # müssten Sie dies dynamisch pro Host definieren (z.B. in der Inventory).
+    csr_common_name: "your.domain.com" # Beispiel: your.domain.com
+    csr_country: "DE"
+    csr_state: "Hessen"
+    csr_locality: "Alheim"
+    csr_organization: "Ihre Firma GmbH"
+    csr_organizational_unit: "IT-Abteilung"
+    csr_email_address: "admin@your.domain.com"
+    csr_subject_alt_names: # Eine Liste von zusätzlichen Domainnamen oder IPs (SANs)
+      - "DNS:www.your.domain.com"
+      - "DNS:another.domain.com"
+      - "IP:192.168.1.1" # Wenn zutreffend
+
+    # Private Key Einstellungen
+    private_key_size: 2048 # Oder 4096 für höhere Sicherheit
+    private_key_type: RSA # Oder EC für Elliptic Curve Keys (benötigt openssl_csr_req für EC-spezifische Parameter)
+    # private_key_passphrase: "your_strong_passphrase" # Optional: Kommentar entfernen und Passphrase setzen, wenn gewünscht
+    # --- Ende der Konfiguration ---
+
+  tasks:
+    - name: Hostnamen für Dateinamen festlegen
+      set_fact:
+        # Hier können Sie loggen, wie Sie den Hostnamen für die Dateinamen bestimmen.
+        # Standardmäßig nehmen wir den csr_common_name als Referenz.
+        current_host_for_csr: "{{ csr_common_name }}"
+
+    - name: Sicherstellen, dass der Host-spezifische Ausgabeverzeichnis existiert
+      file:
+        path: "{{ base_output_directory }}/{{ current_host_for_csr }}"
+        state: directory
+        mode: '0755'
+
+    - name: Privaten Schlüssel generieren (RSA, {{ private_key_size }} bits)
+      community.crypto.openssl_privatekey:
+        path: "{{ base_output_directory }}/{{ current_host_for_csr }}/{{ current_host_for_csr }}.key"
+        size: "{{ private_key_size }}"
+        type: "{{ private_key_type }}"
+        # passphrase: "{{ private_key_passphrase | default(omit) }}"
+        force: no
+      register: private_key_result
+
+    - name: CSR generieren
+      community.crypto.openssl_csr:
+        path: "{{ base_output_directory }}/{{ current_host_for_csr }}/{{ current_host_for_csr }}.csr"
+        privatekey_path: "{{ base_output_directory }}/{{ current_host_for_csr }}/{{ current_host_for_csr }}.key"
+        # privatekey_passphrase: "{{ private_key_passphrase | default(omit) }}"
+        common_name: "{{ csr_common_name }}"
+        country_name: "{{ csr_country }}"
+        state_or_province_name: "{{ csr_state }}"
+        locality_name: "{{ csr_locality }}"
+        organization_name: "{{ csr_organization }}"
+        organizational_unit_name: "{{ csr_organizational_unit }}"
+        email_address: "{{ csr_email_address }}"
+        subject_alt_name: "{{ csr_subject_alt_names }}"
+        force: no
+      register: csr_result
+
+    - name: Anzeigen des Pfads der generierten Dateien
+      debug:
+        msg: |
+          Privater Schlüssel gespeichert unter: {{ base_output_directory }}/{{ current_host_for_csr }}/{{ current_host_for_csr }}.key
+          CSR gespeichert unter: {{ base_output_directory }}/{{ current_host_for_csr }}/{{ current_host_for_csr }}.csr
+      when: private_key_result.changed or csr_result.changed
+
+    - name: Hinweis, wenn Dateien bereits existieren
+      debug:
+        msg: "Schlüssel und/oder CSR für {{ current_host_for_csr }} existieren bereits und wurden nicht neu generiert."
+      when: not private_key_result.changed and not csr_result.changed
