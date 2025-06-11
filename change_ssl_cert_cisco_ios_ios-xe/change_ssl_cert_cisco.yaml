@@ -1,0 +1,84 @@
+---
+- name: SSL-Zertifikat auf Cisco-Switches austauschen
+  hosts: cisco_switches
+  become: yes
+  become_method: enable
+  gather_facts: yes
+  collections:
+    - cisco.ios
+
+  vars:
+    cert_input_path: "/pfad/zum/zertifikat"  # Eingangsordner für Zertifikate
+    cert_done_path: "/pfad/zum/erledigt_ordner"  # Zielordner für verarbeitete Zertifikate
+    trustpoint_name: "SSL-Trustpoint"  # Name des Trustpoints auf dem Switch
+
+  tasks:
+    - name: Finde alle Zertifikate im Eingangsordner
+      ansible.builtin.find:
+        paths: "{{ cert_input_path }}"
+        patterns: "*.crt"
+      register: zertifikate
+      delegate_to: localhost
+
+    - name: Verarbeite jedes Zertifikat
+      loop: "{{ zertifikate.files }}"
+      loop_control:
+        loop_var: zertifikat
+      block:
+        - name: Extrahiere den Hostnamen aus dem Zertifikat-Dateinamen
+          ansible.builtin.set_fact:
+            hostname: "{{ zertifikat.path | basename | regex_replace('.*_([^_]+).crt', '\\1') }}"
+
+        - name: Prüfe, ob Zertifikat für den aktuellen Host ist
+          when: hostname == inventory_hostname
+          block:
+            - name: Kopiere Zertifikat und Schlüssel auf den Switch
+              cisco.ios.ios_config:
+                lines:
+                  - crypto pki trustpoint {{ trustpoint_name }}
+                  - enrollment terminal
+                  - exit
+              register: trustpoint_setup
+
+            - name: Importiere Zertifikat in Trustpoint
+              cisco.ios.ios_command:
+                commands:
+                  - command: "crypto pki import {{ trustpoint_name }} certificate"
+                    prompt: "Enter the base 64 encoded certificate."
+                    answer: "{{ lookup('file', zertifikat.path) }}\nquit"
+              when: trustpoint_setup.changed
+
+            - name: Importiere privaten Schlüssel (falls separat geliefert)
+              cisco.ios.ios_command:
+                commands:
+                  - command: "crypto pki import {{ trustpoint_name }} pkcs12 terminal"
+                    prompt: "Enter the base 64 encoded PKCS12."
+                    answer: "{{ lookup('file', zertifikat.path | regex_replace('.crt$', '.p12')) }}\nquit"
+              when: trustpoint_setup.changed and (zertifikat.path | regex_replace('.crt$', '.p12') | file_exists)
+
+            - name: Aktiviere HTTPS-Server mit neuem Zertifikat
+              cisco.ios.ios_config:
+                lines:
+                  - ip http secure-server
+                  - ip http secure-trustpoint {{ trustpoint_name }}
+              register: http_config
+
+            - name: Speichere Konfiguration
+              cisco.ios.ios_config:
+                save_when: modified
+              when: http_config.changed
+
+        - name: Verschiebe Zertifikat in den Erledigt-Ordner
+          ansible.builtin.copy:
+            src: "{{ zertifikat.path }}"
+            dest: "{{ cert_done_path }}/{{ zertifikat.path | basename }}"
+            force: yes
+          delegate_to: localhost
+          when: zertifikat.changed or zertifikat.skipped is not defined or not zertifikat.skipped
+
+        - name: Lösche Originalzertifikat im Eingangsordner
+          ansible.builtin.file:
+            path: "{{ zertifikat.path }}"
+            state: absent
+          delegate_to: localhost
+          when: zertifikat.changed or zertifikat.skipped is not defined or not zertifikat.skipped

@@ -1,0 +1,82 @@
+---
+- name: SSL-Zertifikat auf Extreme Networks EXOS-Switches austauschen
+  hosts: extreme_switches
+  gather_facts: yes
+  collections:
+    - community.network
+  connection: ansible.netcommon.network_cli
+  become: yes
+  become_method: enable
+
+  vars:
+    cert_input_path: "/pfad/zum/zertifikat"  # Eingangsordner für Zertifikate
+    cert_done_path: "/pfad/zum/erledigt_ordner"  # Zielordner für verarbeitete Zertifikate
+
+  tasks:
+    - name: Finde alle Zertifikate im Eingangsordner
+      ansible.builtin.find:
+        paths: "{{ cert_input_path }}"
+        patterns: "*.crt"
+      register: zertifikate
+      delegate_to: localhost
+
+    - name: Verarbeite jedes Zertifikat
+      loop: "{{ zertifikate.files }}"
+      loop_control:
+        loop_var: zertifikat
+      block:
+        - name: Extrahiere den Hostnamen aus dem Zertifikat-Dateinamen
+          ansible.builtin.set_fact:
+            hostname: "{{ zertifikat.path | basename | regex_replace('.*_([^_]+).crt', '\\1') }}"
+
+        - name: Prüfe, ob Zertifikat für den aktuellen Host ist
+          when: hostname == inventory_hostname
+          block:
+            - name: Lade Zertifikat auf den Switch
+              community.network.exos_command:
+                commands:
+                  - command: "configure ssl certificate"
+                    prompt: "Enter certificate:"
+                    answer: "{{ lookup('file', zertifikat.path) }}\n"
+              register: cert_load
+
+            - name: Lade privaten Schlüssel auf den Switch (falls vorhanden)
+              community.network.exos_command:
+                commands:
+                  - command: "configure ssl privkey"
+                    prompt: "Enter private key:"
+                    answer: "{{ lookup('file', zertifikat.path | regex_replace('.crt$', '.key')) }}\n"
+              when: (zertifikat.path | regex_replace('.crt$', '.key') | file_exists)
+              register: key_load
+
+            - name: Aktiviere HTTPS-Server
+              community.network.exos_config:
+                lines:
+                  - enable web https
+              register: https_config
+
+            - name: Starte Webprozess neu
+              community.network.exos_command:
+                commands:
+                  - restart process web
+              when: cert_load.changed or key_load.changed or https_config.changed
+
+            - name: Speichere Konfiguration
+              community.network.exos_config:
+                save: yes
+              when: cert_load.changed or key_load.changed or https_config.changed
+
+        - name: Verschiebe Zertifikat in den Erledigt-Ordner
+          ansible.builtin.copy:
+            src: "{{ zertifikat.path }}"
+            dest: "{{ cert_done_path }}/{{ zertifikat.path | basename }}"
+            force: yes
+          delegate_to: localhost
+          when: zertifikat.changed or zertifikat.skipped is not defined or not zertifikat.skipped
+
+        - name: Lösche Originalzertifikat im Eingangsordner
+          ansible.builtin.file:
+            path: "{{ zertifikat.path }}"
+            state: absent
+          delegate_to: localhost
+          when: zertifikat.changed or zertifikat.skipped is not defined or not zertifikat.skipped

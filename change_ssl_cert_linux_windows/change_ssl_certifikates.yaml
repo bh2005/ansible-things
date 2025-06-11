@@ -1,0 +1,228 @@
+- name: SSL-Zertifikat auswechseln
+  hosts: all
+  become: yes
+  gather_facts: yes # Sicherstellen, dass Fakten gesammelt werden, insbesondere für ansible_facts.packages und ansible_os_family
+
+  tasks:
+  - name: Finde alle Zertifikate im Eingangsordner
+    find:
+      paths: /pfad/zum/zertifikat # Dieser Pfad muss auf dem Ansible Control Host existieren
+      patterns: "*.crt"
+    register: zertifikate
+    delegate_to: localhost # Der find-Task läuft auf dem Ansible Control Host
+
+  - name: Verarbeite jedes Zertifikat
+    loop: "{{ zertifikate.files }}"
+    loop_control:
+      loop_var: zertifikat
+    block:
+      - name: Extrahiere den Hostnamen aus dem Zertifikat-Dateinamen
+        set_fact:
+          hostname: "{{ zertifikat.path | basename | regex_replace('.*_([^_]+).crt', '\\1') }}"
+
+      - name: Prüfe Betriebssystem und tausche Zertifikat aus
+        when: hostname == inventory_hostname # Stelle sicher, dass das Zertifikat für den aktuellen Host ist
+        block:
+          - name: Debian/Ubuntu
+            when: ansible_distribution in ["Debian", "Ubuntu"]
+            block:
+              - name: Apache
+                when: "'apache2' in ansible_facts.packages"
+                block:
+                  - name: Zertifikat auswechseln (Apache Debian/Ubuntu)
+                    copy:
+                      content: "{{ lookup('file', zertifikat.path) }}"
+                      dest: /etc/apache2/ssl/{{ zertifikat.path | basename }} # Dynamischer Dateiname
+                      mode: '0644'
+                  - name: Apache neu starten (Debian/Ubuntu)
+                    service:
+                      name: apache2
+                      state: restarted
+              - name: Nginx
+                when: "'nginx' in ansible_facts.packages"
+                block:
+                  - name: Zertifikat auswechseln (Nginx Debian/Ubuntu)
+                    copy:
+                      content: "{{ lookup('file', zertifikat.path) }}"
+                      dest: /etc/nginx/ssl/{{ zertifikat.path | basename }} # Dynamischer Dateiname
+                      mode: '0644'
+                  - name: Nginx neu starten (Debian/Ubuntu)
+                    service:
+                      name: nginx
+                      state: restarted
+
+          - name: RHEL/CentOS
+            when: ansible_distribution in ["RedHat", "CentOS"]
+            block:
+              - name: Apache
+                when: "'httpd' in ansible_facts.packages"
+                block:
+                  - name: Zertifikat auswechseln (Apache RHEL/CentOS)
+                    copy:
+                      content: "{{ lookup('file', zertifikat.path) }}"
+                      dest: /etc/httpd/ssl/{{ zertifikat.path | basename }} # Dynamischer Dateiname
+                      mode: '0644'
+                  - name: Apache neu starten (RHEL/CentOS)
+                    service:
+                      name: httpd
+                      state: restarted
+              - name: Nginx
+                when: "'nginx' in ansible_facts.packages"
+                block:
+                  - name: Zertifikat auswechseln (Nginx RHEL/CentOS)
+                    copy:
+                      content: "{{ lookup('file', zertifikat.path) }}"
+                      dest: /etc/nginx/ssl/{{ zertifikat.path | basename }} # Dynamischer Dateiname
+                      mode: '0644'
+                  - name: Nginx neu starten (RHEL/CentOS)
+                    service:
+                      name: nginx
+                      state: restarted
+
+          - name: SUSE
+            when: ansible_distribution in ["SUSE"]
+            block:
+              - name: Apache
+                when: "'apache2' in ansible_facts.packages"
+                block:
+                  - name: Zertifikat auswechseln (Apache SUSE)
+                    copy:
+                      content: "{{ lookup('file', zertifikat.path) }}"
+                      dest: /etc/apache2/ssl/{{ zertifikat.path | basename }} # Dynamischer Dateiname
+                      mode: '0644'
+                  - name: Apache neu starten (SUSE)
+                    service:
+                      name: apache2
+                      state: restarted
+              - name: Nginx
+                when: "'nginx' in ansible_facts.packages"
+                block:
+                  - name: Zertifikat auswechseln (Nginx SUSE)
+                    copy:
+                      content: "{{ lookup('file', zertifikat.path) }}"
+                      dest: /etc/nginx/ssl/{{ zertifikat.path | basename }} # Dynamischer Dateiname
+                      mode: '0644'
+                  - name: Nginx neu starten (SUSE)
+                    service:
+                      name: nginx
+                      state: restarted
+
+          - name: Windows
+            when: ansible_os_family == "Windows"
+            block:
+              - name: Prüfe, ob IIS Dienst existiert
+                win_service_info:
+                  name: W3SVC
+                register: iis_service_info
+                # Führe dies auf dem Ziel-Host aus
+                delegate_to: "{{ inventory_hostname }}"
+
+              - name: Führe IIS-Tasks aus, wenn der Dienst existiert
+                when: iis_service_info.exists
+                block:
+                  - name: Prüfe, ob Windows über OpenSSH erreichbar ist
+                    block:
+                      - name: Prüfe, ob Port 22 offen ist
+                        wait_for:
+                          host: "{{ inventory_hostname }}"
+                          port: 22
+                          timeout: 10
+                        ignore_errors: true
+                        register: ssh_port_open
+                      - name: Verwende OpenSSH, wenn Port 22 offen ist
+                        when: ssh_port_open.success
+                        block:
+                          - name: Zertifikat temporär auf Windows kopieren (via OpenSSH)
+                            win_copy:
+                              content: "{{ lookup('file', zertifikat.path) }}"
+                              dest: "C:\\Windows\\Temp\\{{ zertifikat.path | basename }}"
+                            register: temp_cert_copy_ssh
+
+                          - name: Zertifikat auf Windows importieren und Hash registrieren (via OpenSSH)
+                            win_certificate:
+                              path: "{{ temp_cert_copy_ssh.dest }}"
+                              store_name: WebHosting # Empfohlener Speicher für SSL-Zertifikate
+                              state: present
+                            register: cert_import_result_ssh
+
+                          - name: IIS Webbindung aktualisieren (Windows via OpenSSH)
+                            win_iis_webbinding:
+                              name: Default Web Site
+                              protocol: https
+                              certificate_hash: "{{ cert_import_result_ssh.certificate_hash }}"
+                            # Stellen Sie sicher, dass dies nur für den Host läuft, der das Zertifikat benötigt
+                            when: cert_import_result_ssh.changed or cert_import_result_ssh.already_present
+
+                          - name: Temporäres Zertifikat auf Windows löschen (via OpenSSH)
+                            win_file:
+                              path: "{{ temp_cert_copy_ssh.dest }}"
+                              state: absent
+
+                          - name: IIS neu starten (Windows via OpenSSH)
+                            win_service:
+                              name: W3SVC
+                              state: restarted
+
+                      - name: Prüfe, ob Windows über WinRM erreichbar ist
+                        when: not ssh_port_open.success
+                        block:
+                          - name: Prüfe, ob Port 5985 offen ist
+                            wait_for:
+                              host: "{{ inventory_hostname }}"
+                              port: 5985
+                              timeout: 10
+                            ignore_errors: true
+                            register: winrm_port_open
+                          - name: Verwende WinRM, wenn Port 5985 offen ist
+                            when: winrm_port_open.success
+                            block:
+                              - name: Zertifikat temporär auf Windows kopieren (via WinRM)
+                                win_copy:
+                                  content: "{{ lookup('file', zertifikat.path) }}"
+                                  dest: "C:\\Windows\\Temp\\{{ zertifikat.path | basename }}"
+                                register: temp_cert_copy_winrm
+
+                              - name: Zertifikat auf Windows importieren und Hash registrieren (via WinRM)
+                                win_certificate:
+                                  path: "{{ temp_cert_copy_winrm.dest }}"
+                                  store_name: WebHosting # Empfohlener Speicher für SSL-Zertifikate
+                                  state: present
+                                register: cert_import_result_winrm
+
+                              - name: IIS Webbindung aktualisieren (Windows via WinRM)
+                                win_iis_webbinding:
+                                  name: Default Web Site
+                                  protocol: https
+                                  certificate_hash: "{{ cert_import_result_winrm.certificate_hash }}"
+                                  when: cert_import_result_winrm.changed or cert_import_result_winrm.already_present
+
+                              - name: Temporäres Zertifikat auf Windows löschen (via WinRM)
+                                win_file:
+                                  path: "{{ temp_cert_copy_winrm.dest }}"
+                                  state: absent
+
+                              - name: IIS neu starten (Windows via WinRM)
+                                win_service:
+                                  name: W3SVC
+                                  state: restarted
+                          
+                  - name: Fehler melden, wenn keine Windows-Verbindung möglich ist
+                    when: not ssh_port_open.success and not winrm_port_open.success
+                    fail:
+                      msg: "Fehler: Konnte keine Verbindung zum Windows-Host {{ inventory_hostname }} über SSH (Port 22) oder WinRM (Port 5985) herstellen, um IIS zu verwalten."
+
+      - name: Verschiebe das Zertifikat in den Erledigt-Ordner auf dem Control Host
+        copy:
+          src: "{{ zertifikat.path }}"
+          dest: "/pfad/zum/erledigt_ordner/{{ zertifikat.path | basename }}" # Zielordner für erledigte Zertifikate
+          remote_src: yes # Quelle ist ein lokaler Pfad auf dem Control Host
+          force: yes # Überschreibt, wenn die Datei im Zielordner bereits existiert
+        delegate_to: localhost # Dies läuft auf dem Ansible Control Host
+        when: zertifikat.changed or zertifikat.skipped is not defined or not zertifikat.skipped # Nur verschieben, wenn es tatsächlich verarbeitet wurde
+
+      - name: Originalzertifikat im Eingangsordner löschen auf dem Control Host
+        file:
+          path: "{{ zertifikat.path }}"
+          state: absent
+        delegate_to: localhost
+        when: zertifikat.changed or zertifikat.skipped is not defined or not zertifikat.skipped # Nur löschen, wenn es tatsächlich verarbeitet wurde
