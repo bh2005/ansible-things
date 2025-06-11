@@ -1,0 +1,141 @@
+---
+- name: SSL-Zertifikat auf FortiGate auswechseln
+  hosts: fortigates
+  gather_facts: no
+  connection: httpapi
+
+  vars:
+    fortios_access_token: "{{ vault_fortios_access_token | default('') }}"
+    fortios_username: "{{ vault_fortios_username | default('admin') }}"
+    fortios_password: "{{ vault_fortios_password | default('') }}"
+    fortios_vdom: "root"
+    certificate_source_path: "/pfad/zum/zertifikat_ordner"
+    certificate_done_path: "/pfad/zum/erledigt_ordner"
+
+  tasks:
+    - name: Finde Zertifikats-, Schlüssel- und Kettendateien für den aktuellen Host
+      ansible.builtin.find:
+        paths: "{{ certificate_source_path }}"
+        patterns: "{{ inventory_hostname }}*.crt,{{ inventory_hostname }}*.key,{{ inventory_hostname }}*.chain"
+      register: host_cert_files
+      delegate_to: localhost
+
+    - name: Prüfe, ob Zertifikat und Schlüssel für den Host gefunden wurden
+      ansible.builtin.fail:
+        msg: "Für Host '{{ inventory_hostname }}' konnte kein passendes Zertifikat (.crt) oder privater Schlüssel (.key) im Pfad '{{ certificate_source_path }}' gefunden werden."
+      when: host_cert_files.files | selectattr('path', 'search', '\\.crt$') | list | length == 0 or host_cert_files.files | selectattr('path', 'search', '\\.key$') | list | length == 0
+
+    - name: Extrahiere Pfade für Zertifikat, Schlüssel und Kette
+      ansible.builtin.set_fact:
+        current_cert_path: "{{ host_cert_files.files | selectattr('path', 'search', '\\.crt$') | first }}"
+        current_key_path: "{{ host_cert_files.files | selectattr('path', 'search', '\\.key$') | first }}"
+        current_chain_path: "{{ (host_cert_files.files | selectattr('path', 'search', '\\.chain$') | first).path | default('') }}"
+      when: host_cert_files.files | length > 0
+
+    - name: Lade Zertifikats-, Schlüssel- und Ketteninhalt vom Control Host
+      ansible.builtin.set_fact:
+        cert_content: "{{ lookup('file', current_cert_path.path) }}"
+        key_content: "{{ lookup('file', current_key_path.path) }}"
+        chain_content: "{{ lookup('file', current_chain_path) if current_chain_path else '' }}"
+      when: current_cert_path.path is defined and current_key_path.path is defined
+      delegate_to: localhost
+
+    - name: Validiere Zertifikats- und Schlüsselinhalt
+      ansible.builtin.assert:
+        that:
+          - "'-----BEGIN CERTIFICATE-----' in cert_content"
+          - "'-----END CERTIFICATE-----' in cert_content"
+          - "'-----BEGIN PRIVATE KEY-----' in key_content or '-----BEGIN RSA PRIVATE KEY-----' in key_content"
+          - "'-----END PRIVATE KEY-----' in key_content or '-----END RSA PRIVATE KEY-----' in key_content"
+        fail_msg: "Ungültiges Zertifikat oder privater Schlüssel für Host '{{ inventory_hostname }}'."
+      when: cert_content and key_content
+
+    - name: Setze den Namen des Zertifikats auf der FortiGate
+      ansible.builtin.set_fact:
+        fortigate_cert_name: "{{ current_cert_path.path | basename | regex_replace('\\.crt$', '') }}"
+      when: current_cert_path.path is defined
+
+    - name: Prüfe, ob Zertifikat bereits existiert
+      fortinet.fortios.fortios_certificate_local:
+        access_token: "{{ fortios_access_token | default(omit) }}"
+        username: "{{ fortios_username if not fortios_access_token else omit }}"
+        password: "{{ fortios_password if not fortios_access_token else omit }}"
+        vdom: "{{ fortios_vdom }}"
+        state: absent
+        certificate_local:
+          name: "{{ fortigate_cert_name }}"
+      when: current_cert_path.path is defined
+      ignore_errors: yes
+
+    - name: Importiere lokales Zertifikat auf FortiGate
+      fortinet.fortios.fortios_certificate_local:
+        access_token: "{{ fortios_access_token | default(omit) }}"
+        username: "{{ fortios_username if not fortios_access_token else omit }}"
+        password: "{{ fortios_password if not fortios_access_token else omit }}"
+        vdom: "{{ fortios_vdom }}"
+        state: present
+        certificate_local:
+          name: "{{ fortigate_cert_name }}"
+          source: 'upload'
+          certificate: "{{ cert_content }}"
+          private_key: "{{ key_content }}"
+          ca_chain: "{{ chain_content | default(omit) }}"
+      when: current_cert_path.path is defined and current_key_path.path is defined and cert_content and key_content
+      register: cert_upload
+      failed_when: cert_upload.failed or 'msg' in cert_upload and 'error' in cert_upload.msg
+
+    - name: Beispiel Zertifikat für SSL-VPN Portal konfigurieren
+      fortinet.fortios.fortios_vpn_ssl_settings:
+        access_token: "{{ fortios_access_token | default(omit) }}"
+        username: "{{ fortios_username if not fortios_access_token else omit }}"
+        password: "{{ fortios_password if not fortios_access_token else omit }}"
+        vdom: "{{ fortios_vdom }}"
+        state: present
+        vpn_ssl_settings:
+          server_certificate: "{{ fortigate_cert_name }}"
+      when: cert_upload.changed
+
+    - name: Verschiebe das Zertifikat in den Erledigt-Ordner
+      ansible.builtin.copy:
+        src: "{{ current_cert_path.path }}"
+        dest: "{{ certificate_done_path }}/{{ current_cert_path.path | basename }}"
+        force: yes
+      delegate_to: localhost
+      when: cert_upload.changed
+
+    - name: Verschiebe den privaten Schlüssel in den Erledigt-Ordner
+      ansible.builtin.copy:
+        src: "{{ current_key_path.path }}"
+        dest: "{{ certificate_done_path }}/{{ current_key_path.path | basename }}"
+        force: yes
+      delegate_to: localhost
+      when: cert_upload.changed
+
+    - name: Verschiebe die Zertifikatskette in den Erledigt-Ordner
+      ansible.builtin.copy:
+        src: "{{ current_chain_path }}"
+        dest: "{{ certificate_done_path }}/{{ current_chain_path | basename }}"
+        force: yes
+      delegate_to: localhost
+      when: current_chain_path != '' and cert_upload.changed
+
+    - name: Originalzertifikat im Eingangsordner löschen
+      ansible.builtin.file:
+        path: "{{ current_cert_path.path }}"
+        state: absent
+      delegate_to: localhost
+      when: cert_upload.changed
+
+    - name: Original privaten Schlüssel im Eingangsordner löschen
+      ansible.builtin.file:
+        path: "{{ current_key_path.path }}"
+        state: absent
+      delegate_to: localhost
+      when: cert_upload.changed
+
+    - name: Original Zertifikatskette im Eingangsordner löschen
+      ansible.builtin.file:
+        path: "{{ current_chain_path }}"
+        state: absent
+      delegate_to: localhost
+      when: current_chain_path != '' and cert_upload.changed
