@@ -1,0 +1,278 @@
+---
+- name: SSL-Zertifikat auswechseln
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  vars:
+    cert_input_path: "/pfad/zum/zertifikat"
+    cert_done_path: "/pfad/zum/erledigt_ordner"
+
+  tasks:
+    - name: Finde alle Zertifikate im Eingangsordner
+      find:
+        paths: "{{ cert_input_path }}"
+        patterns: "*.crt"
+      register: zertifikate
+      delegate_to: localhost
+
+    - name: Verarbeite jedes Zertifikat
+      loop: "{{ zertifikate.files }}"
+      loop_control:
+        loop_var: zertifikat
+      block:
+        - name: Extrahiere den Hostnamen aus dem Zertifikat-Dateinamen
+          set_fact:
+            hostname: "{{ zertifikat.path | basename | regex_replace('.*_([^_]+).crt', '\\1') }}"
+
+        - name: Prüfe, ob privater Schlüssel existiert
+          stat:
+            path: "{{ cert_input_path }}/{{ hostname }}/{{ hostname }}.key"
+          register: key_stat
+          delegate_to: localhost
+
+        - name: Prüfe Betriebssystem und tausche Zertifikat aus
+          when: hostname == inventory_hostname and key_stat.stat.exists
+          block:
+            - name: Debian/Ubuntu
+              when: ansible_distribution in ["Debian", "Ubuntu"]
+              block:
+                - name: Apache
+                  when: "'apache2' in ansible_facts.packages"
+                  block:
+                    - name: Privaten Schlüssel kopieren
+                      copy:
+                        src: "{{ cert_input_path }}/{{ hostname }}/{{ hostname }}.key"
+                        dest: /etc/apache2/ssl/{{ hostname }}.key
+                        mode: '0600'
+                    - name: Zertifikat kopieren
+                      copy:
+                        content: "{{ lookup('file', zertifikat.path) }}"
+                        dest: /etc/apache2/ssl/{{ zertifikat.path | basename }}
+                        mode: '0644'
+                    - name: Apache neu starten
+                      service:
+                        name: apache2
+                        state: restarted
+                - name: Nginx
+                  when: "'nginx' in ansible_facts.packages"
+                  block:
+                    - name: Privaten Schlüssel kopieren
+                      copy:
+                        src: "{{ cert_input_path }}/{{ hostname }}/{{ hostname }}.key"
+                        dest: /etc/nginx/ssl/{{ hostname }}.key
+                        mode: '0600'
+                    - name: Zertifikat kopieren
+                      copy:
+                        content: "{{ lookup('file', zertifikat.path) }}"
+                        dest: /etc/nginx/ssl/{{ zertifikat.path | basename }}
+                        mode: '0644'
+                    - name: Nginx neu starten
+                      service:
+                        name: nginx
+                        state: restarted
+
+            - name: RHEL/CentOS
+              when: ansible_distribution in ["RedHat", "CentOS"]
+              block:
+                - name: Apache
+                  when: "'httpd' in ansible_facts.packages"
+                  block:
+                    - name: Privaten Schlüssel kopieren
+                      copy:
+                        src: "{{ cert_input_path }}/{{ hostname }}/{{ hostname }}.key"
+                        dest: /etc/httpd/ssl/{{ hostname }}.key
+                        mode: '0600'
+                    - name: Zertifikat kopieren
+                      copy:
+                        content: "{{ lookup('file', zertifikat.path) }}"
+                        dest: /etc/httpd/ssl/{{ zertifikat.path | basename }}
+                        mode: '0644'
+                    - name: Apache neu starten
+                      service:
+                        name: httpd
+                        state: restarted
+                - name: Nginx
+                  when: "'nginx' in ansible_facts.packages"
+                  block:
+                    - name: Privaten Schlüssel kopieren
+                      copy:
+                        src: "{{ cert_input_path }}/{{ hostname }}/{{ hostname }}.key"
+                        dest: /etc/nginx/ssl/{{ hostname }}.key
+                        mode: '0600'
+                    - name: Zertifikat kopieren
+                      copy:
+                        content: "{{ lookup('file', zertifikat.path) }}"
+                        dest: /etc/nginx/ssl/{{ zertifikat.path | basename }}
+                        mode: '0644'
+                    - name: Nginx neu starten
+                      service:
+                        name: nginx
+                        state: restarted
+
+            - name: SUSE
+              when: ansible_distribution in ["SUSE"]
+              block:
+                - name: Apache
+                  when: "'apache2' in ansible_facts.packages"
+                  block:
+                    - name: Privaten Schlüssel kopieren
+                      copy:
+                        src: "{{ cert_input_path }}/{{ hostname }}/{{ hostname }}.key"
+                        dest: /etc/apache2/ssl/{{ hostname }}.key
+                        mode: '0600'
+                    - name: Zertifikat kopieren
+                      copy:
+                        content: "{{ lookup('file', zertifikat.path) }}"
+                        dest: /etc/apache2/ssl/{{ zertifikat.path | basename }}
+                        mode: '0644'
+                    - name: Apache neu starten
+                      service:
+                        name: apache2
+                        state: restarted
+                - name: Nginx
+                  when: "'nginx' in ansible_facts.packages"
+                  block:
+                    - name: Privaten Schlüssel kopieren
+                      copy:
+                        src: "{{ cert_input_path }}/{{ hostname }}/{{ hostname }}.key"
+                        dest: /etc/nginx/ssl/{{ hostname }}.key
+                        mode: '0600'
+                    - name: Zertifikat kopieren
+                      copy:
+                        content: "{{ lookup('file', zertifikat.path) }}"
+                        dest: /etc/nginx/ssl/{{ zertifikat.path | basename }}
+                        mode: '0644'
+                    - name: Nginx neu starten
+                      service:
+                        name: nginx
+                        state: restarted
+
+            - name: Windows
+              when: ansible_os_family == "Windows"
+              block:
+                - name: Prüfe, ob IIS Dienst existiert
+                  win_service_info:
+                    name: W3SVC
+                  register: iis_service_info
+
+                - name: Generiere PFX-Datei für IIS
+                  when: iis_service_info.exists
+                  block:
+                    - name: Erstelle temporäre PFX-Datei auf Control Host
+                      community.crypto.openssl_pkcs12:
+                        action: export
+                        certificate_path: "{{ zertifikat.path }}"
+                        privatekey_path: "{{ cert_input_path }}/{{ hostname }}/{{ hostname }}.key"
+                        privatekey_passphrase: "{{ current_key_passphrase | default(omit) }}"
+                        path: "{{ cert_input_path }}/{{ hostname }}/{{ hostname }}.pfx"
+                        friendly_name: "{{ hostname }}"
+                        passphrase: "{{ current_key_passphrase | default('temporary_passphrase') }}"
+                        state: present
+                      delegate_to: localhost
+
+                - name: Führe IIS-Tasks aus
+                  when: iis_service_info.exists
+                  block:
+                    - name: Prüfe Verbindungsmethode (WinRM oder OpenSSH)
+                      block:
+                        - name: Prüfe WinRM (Port 5985)
+                          wait_for:
+                            host: "{{ inventory_hostname }}"
+                            port: 5985
+                            timeout: 10
+                          ignore_errors: true
+                          register: winrm_port_open
+
+                        - name: Prüfe OpenSSH (Port 22)
+                          wait_for:
+                            host: "{{ inventory_hostname }}"
+                            port: 22
+                            timeout: 10
+                          ignore_errors: true
+                          register: ssh_port_open
+                          when: not winrm_port_open.success
+
+                        - name: Zertifikat und PFX auf Windows verarbeiten
+                          when: winrm_port_open.success or ssh_port_open.success
+                          block:
+                            - name: PFX temporär auf Windows kopieren
+                              win_copy:
+                                src: "{{ cert_input_path }}/{{ hostname }}/{{ hostname }}.pfx"
+                                dest: "C:\\Windows\\Temp\\{{ hostname }}.pfx"
+                              register: temp_pfx_copy
+
+                            - name: PFX auf Windows importieren
+                              win_certificate:
+                                path: "{{ temp_pfx_copy.dest }}"
+                                store_name: WebHosting
+                                passphrase: "{{ current_key_passphrase | default('temporary_passphrase') }}"
+                                state: present
+                              register: cert_import_result
+
+                            - name: IIS Webbindung aktualisieren
+                              win_iis_webbinding:
+                                name: Default Web Site
+                                protocol: https
+                                certificate_hash: "{{ cert_import_result.certificate_hash }}"
+                              when: cert_import_result.changed or cert_import_result.already_present
+
+                            - name: Temporäre PFX-Datei auf Windows löschen
+                              win_file:
+                                path: "{{ temp_pfx_copy.dest }}"
+                                state: absent
+
+                            - name: IIS neu starten
+                              win_service:
+                                name: W3SVC
+                                state: restarted
+
+                        - name: Fehler melden, wenn keine Verbindung möglich
+                          when: not winrm_port_open.success and not ssh_port_open.success
+                          fail:
+                            msg: "Fehler: Konnte keine Verbindung zu {{ inventory_hostname }} über WinRM (Port 5985) oder OpenSSH (Port 22) herstellen."
+
+        - name: Verschiebe Zertifikat in Erledigt-Ordner
+          copy:
+            src: "{{ zertifikat.path }}"
+            dest: "{{ cert_done_path }}/{{ zertifikat.path | basename }}"
+            force: yes
+          delegate_to: localhost
+          when: zertifikat.changed or zertifikat.skipped is not defined or not zertifikat.skipped
+
+        - name: Verschiebe privaten Schlüssel in Erledigt-Ordner
+          copy:
+            src: "{{ cert_input_path }}/{{ hostname }}/{{ hostname }}.key"
+            dest: "{{ cert_done_path }}/{{ hostname }}.key"
+            force: yes
+          delegate_to: localhost
+          when: key_stat.stat.exists and (zertifikat.changed or zertifikat.skipped is not defined or not zertifikat.skipped)
+
+        - name: Verschiebe PFX-Datei in Erledigt-Ordner (Windows)
+          copy:
+            src: "{{ cert_input_path }}/{{ hostname }}/{{ hostname }}.pfx"
+            dest: "{{ cert_done_path }}/{{ hostname }}.pfx"
+            force: yes
+          delegate_to: localhost
+          when: ansible_os_family == 'Windows' and iis_service_info.exists and (zertifikat.changed or zertifikat.skipped is not defined or not zertifikat.skipped)
+
+        - name: Originalzertifikat löschen
+          file:
+            path: "{{ zertifikat.path }}"
+            state: absent
+          delegate_to: localhost
+          when: zertifikat.changed or zertifikat.skipped is not defined or not zertifikat.skipped
+
+        - name: Originalen privaten Schlüssel löschen
+          file:
+            path: "{{ cert_input_path }}/{{ hostname }}/{{ hostname }}.key"
+            state: absent
+          delegate_to: localhost
+          when: key_stat.stat.exists and (zertifikat.changed or zertifikat.skipped is not defined or not zertifikat.skipped)
+
+        - name: Originale PFX-Datei löschen (Windows)
+          file:
+            path: "{{ cert_input_path }}/{{ hostname }}/{{ hostname }}.pfx"
+            state: absent
+          delegate_to: localhost
+          when: ansible_os_family == 'Windows' and iis_service_info.exists and (zertifikat.changed or zertifikat.skipped is not defined or not zertifikat.skipped)

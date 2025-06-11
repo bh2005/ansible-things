@@ -1,0 +1,101 @@
+---
+- name: Mehrere OpenSSL CSRs und private Schlüssel generieren
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars_files:
+    - vars/csrs.yml
+  tasks:
+    - name: Lade Hostnamen aus CSV-Datei
+      community.general.read_csv:
+        path: data/hostnames.csv
+        delimiter: ','
+      register: csv_data
+
+    - name: Validiere CSV-Daten
+      ansible.builtin.assert:
+        that:
+          - item.common_name is defined and item.common_name | length > 0
+          - item.country is defined and item.country | length == 2
+        fail_msg: "Ungültiger Eintrag in CSV: {{ item }}"
+      loop: "{{ csv_data.list }}"
+      when: csv_data.list | length > 0
+
+    - name: Erstelle dynamische CSR-Definitionen
+      set_fact:
+        csr_definitions: |
+          {% set defs = [] %}
+          {% for row in csv_data.list %}
+            {% set sans = row.subject_alt_names.split(',') if row.subject_alt_names else [] %}
+            {{ defs.append({
+              'common_name': row.common_name,
+              'country': row.country,
+              'state': row.state,
+              'locality': row.locality,
+              'organization': row.organization,
+              'organizational_unit': row.organizational_unit,
+              'email_address': row.email_address,
+              'subject_alt_names': sans,
+              'private_key_size': row.private_key_size | int if row.private_key_size else default_private_key_size,
+              'private_key_type': row.private_key_type if row.private_key_type else default_private_key_type,
+              'private_key_passphrase': row.private_key_passphrase if row.private_key_passphrase else omit
+            }) }}
+          {% endfor %}
+          {{ defs }}
+      when: csv_data.list | length > 0
+
+    - name: Verarbeite jede CSR-Definition
+      loop: "{{ csr_definitions }}"
+      loop_control:
+        loop_var: csr_item
+      block:
+        - name: Setze Hostnamen für den aktuellen CSR-Vorgang
+          set_fact:
+            current_csr_cn: "{{ csr_item.common_name }}"
+            current_csr_details: "{{ csr_item }}"
+            current_key_size: "{{ csr_item.private_key_size | default(default_private_key_size) }}"
+            current_key_type: "{{ csr_item.private_key_type | default(default_private_key_type) }}"
+            current_key_passphrase: "{{ csr_item.private_key_passphrase | default(omit) }}"
+
+        - name: Sicherstellen, dass das Host-spezifische Ausgabeverzeichnis existiert
+          file:
+            path: "{{ base_output_directory }}/{{ current_csr_cn }}"
+            state: directory
+            mode: '0755'
+
+        - name: Privaten Schlüssel generieren
+          community.crypto.openssl_privatekey:
+            path: "{{ base_output_directory }}/{{ current_csr_cn }}/{{ current_csr_cn }}.key"
+            size: "{{ current_key_size }}"
+            type: "{{ current_key_type }}"
+            passphrase: "{{ current_key_passphrase }}"
+            force: no
+          register: private_key_result
+
+        - name: CSR generieren
+          community.crypto.openssl_csr:
+            path: "{{ base_output_directory }}/{{ current_csr_cn }}/{{ current_csr_cn }}.csr"
+            privatekey_path: "{{ base_output_directory }}/{{ current_csr_cn }}/{{ current_csr_cn }}.key"
+            privatekey_passphrase: "{{ current_key_passphrase }}"
+            common_name: "{{ current_csr_details.common_name }}"
+            country_name: "{{ current_csr_details.country }}"
+            state_or_province_name: "{{ current_csr_details.state }}"
+            locality_name: "{{ current_csr_details.locality }}"
+            organization_name: "{{ current_csr_details.organization }}"
+            organizational_unit_name: "{{ current_csr_details.organizational_unit }}"
+            email_address: "{{ current_csr_details.email_address }}"
+            subject_alt_name: "{{ current_csr_details.subject_alt_names | default([]) }}"
+            force: no
+          register: csr_result
+
+        - name: Anzeigen des Pfads der generierten Dateien
+          debug:
+            msg: |
+              Privater Schlüssel gespeichert unter: {{ base_output_directory }}/{{ current_csr_cn }}/{{ current_csr_cn }}.key
+              CSR gespeichert unter: {{ base_output_directory }}/{{ current_csr_cn }}/{{ current_csr_cn }}.csr
+          when: private_key_result.changed or csr_result.changed
+
+        - name: Hinweis, wenn Dateien bereits existieren
+          debug:
+            msg: "Schlüssel und/oder CSR für {{ current_csr_cn }} existieren bereits und wurden nicht neu generiert."
+          when: not private_key_result.changed and not csr_result.changed
