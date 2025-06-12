@@ -6,43 +6,24 @@
   vars_files:
     - vars/csrs.yml
   tasks:
-    - name: Lade Hostnamen aus CSV-Datei
-      community.general.read_csv:
-        path: data/hostnames.csv
-        delimiter: ','
-      register: csv_data
+    - name: Lade Hostnamen aus JSON-Datei
+      ansible.builtin.slurp:
+        src: data/hostnames.json
+      register: json_data
 
-    - name: Validiere CSV-Daten
+    - name: Validiere JSON-Daten
       ansible.builtin.assert:
         that:
           - item.common_name is defined and item.common_name | length > 0
           - item.country is defined and item.country | length == 2
-        fail_msg: "Ungültiger Eintrag in CSV: {{ item }}"
-      loop: "{{ csv_data.list }}"
-      when: csv_data.list | length > 0
+        fail_msg: "Ungültiger Eintrag in JSON: {{ item }}"
+      loop: "{{ json_data.content | b64decode | from_json }}"
+      when: json_data.content | b64decode | from_json | length > 0
 
     - name: Erstelle dynamische CSR-Definitionen
       set_fact:
-        csr_definitions: |
-          {% set defs = [] %}
-          {% for row in csv_data.list %}
-            {% set sans = row.subject_alt_names.split(',') if row.subject_alt_names else [] %}
-            {{ defs.append({
-              'common_name': row.common_name,
-              'country': row.country,
-              'state': row.state,
-              'locality': row.locality,
-              'organization': row.organization,
-              'organizational_unit': row.organizational_unit,
-              'email_address': row.email_address,
-              'subject_alt_names': sans,
-              'private_key_size': row.private_key_size | int if row.private_key_size else default_private_key_size,
-              'private_key_type': row.private_key_type if row.private_key_type else default_private_key_type,
-              'private_key_passphrase': row.private_key_passphrase if row.private_key_passphrase else omit
-            }) }}
-          {% endfor %}
-          {{ defs }}
-      when: csv_data.list | length > 0
+        csr_definitions: "{{ json_data.content | b64decode | from_json }}"
+      when: json_data.content | b64decode | from_json | length > 0
 
     - name: Verarbeite jede CSR-Definition
       loop: "{{ csr_definitions }}"
